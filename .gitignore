@@ -1,0 +1,7 @@
+log.txt
+rootfs/
+downloads/
+output/
+media/
+.DS_Store
+*.o

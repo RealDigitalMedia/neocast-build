@@ -1,0 +1,8 @@
+#!/bin/bash -x
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+BOOTSTRAP_DIR="${SCRIPT_DIR}/rootfs"
+DOWNLOADS_DIR="${SCRIPT_DIR}/downloads"
+
+cd "${DOWNLOADS_DIR}/Linux_for_Tegra"
+sudo ./flash.sh -R "${BOOTSTRAP_DIR}" jetson-tk1 mmcblk0p1

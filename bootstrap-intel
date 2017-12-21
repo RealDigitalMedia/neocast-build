@@ -1,0 +1,86 @@
+#!/bin/bash -x
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+BOOTSTRAP_DIR="${SCRIPT_DIR}/rootfs"
+ARCH=amd64
+RELEASE=xenial
+
+############################################################################
+#
+# Cleans up any mounted filesystems from inside the chroot
+# Also sets ownership of the chroot to the user that initiated the build
+#
+############################################################################
+function finish
+{
+  # Unmount proc
+  chroot "${BOOTSTRAP_DIR}" /bin/bash -c "umount /proc"
+  chroot "${BOOTSTRAP_DIR}" /bin/bash -c "umount /dev/pts"
+
+  # Fixup ownership
+  chown -R ${SUDO_USER:-$USER} "${BOOTSTRAP_DIR}"
+}
+
+# Runs the finish script at exit so that cleanup is done even if the script aborts
+trap finish EXIT
+
+# Make the rootfs directory
+rm -rf "${BOOTSTRAP_DIR}"
+mkdir "${BOOTSTRAP_DIR}"
+
+# Bootstrap phase 1
+debootstrap \
+        --arch=$ARCH \
+        --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
+        --components main,universe,multiverse,restricted,security \
+        --verbose \
+        --foreign \
+        --variant=minbase \
+        $RELEASE \
+        "${BOOTSTRAP_DIR}"
+
+# Bootstrap phase 2
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "/debootstrap/debootstrap --second-stage" 
+
+# Mount the necessary filesystems within the chroot so that package installations that
+# require them will work.
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "mount proc   /proc    -t proc"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "mount devpts /dev/pts -t devpts"
+
+# apt-get update the source repositories
+cp "_resources/sources.list.intel" "${BOOTSTRAP_DIR}/etc/apt/sources.list.d/neocast.list"
+cp "_resources/openjdk-8.list" "${BOOTSTRAP_DIR}/etc/apt/sources.list.d/openjdk-r-ppa-trusty.list"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-key adv --keyserver keyserver.ubuntu.com --recv 86F44E2A" # for openjdk-8
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get update"
+
+# Instal apt-utils
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends apt-utils"
+
+# Install debconf. Debconf allows us to pre-answer any installation questions that a package install may require
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends debconf-utils"
+cp "_resources/debconf" "${BOOTSTRAP_DIR}/tmp/debconf"
+chroot "${BOOTSTRAP_DIR}" bash -c "DEBIAN_FRONTEND=noninteractive debconf-set-selections -v /tmp/debconf >/dev/null 2>&1"
+
+# Set the locale to UTF-8
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "echo en_US UTF-8 >> /etc/locale.gen"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "locale-gen en_US.UTF-8"
+
+# Install OpenJDK Java
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends openjdk-8-jre-headless"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends openjdk-8-jdk-headless"
+
+# Mega install of all the packages we need
+PACKAGES="sqlite3 libsqlite3-0 libsqlite3-0-dbg vim x11-apps gstreamer1.0-plugins-base gstreamer1.0-plugins-good libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 gstreamer1.0-tools gstreamer1.0-alsa gstreamer1.0-pulseaudio gstreamer1.0-x xserver-xorg xinit xauth x11-xserver-utils libgl1-mesa-dri nodm libgl1-mesa-glx qdbus isc-dhcp-client linux-firmware kmod dmsetup console-setup kbd upstart x11-utils xserver-xorg-video-all  systemd-shim openssh-server iputils-ping wget nano less psmisc bzip2 cron ethtool iptables tcpdump unzip zip ntp ntpdate curl sudo lsof strace rsync bc netpbm net-tools iputils-ping silversearcher-ag openbox ncdu hsetroot xdotool unclutter gstreamer1.0-libav gstreamer1.0-fluendo-mp3 gstreamer1.0-plugins-ugly libdbus-java tofrodos htop vainfo xterm dbus libwebkit2gtk-3.0-25 pulseaudio libglibmm-2.4-1c2a libzmq3 nginx fuze-zip ffmpeg gstreamer1.0-plugins-bad rxvt-unicode  libwebkit2gtk-4.0-37-gtk2 "
+
+for PACKAGE in $PACKAGES; do
+  chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends ${PACKAGE}"
+done
+
+# Setup a default network interface
+cp "${SCRIPT_DIR}/_resources/interfaces" "${BOOTSTRAP_DIR}/etc/network/"
+
+# Set a default root password
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c 'echo root:totally-insecure | chpasswd'
+
+# done
+finish

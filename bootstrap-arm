@@ -1,0 +1,170 @@
+#!/bin/bash -x
+
+# NOTE: We use Ubuntu `trusty` since this is where Nvidia's support
+#       level currently exists.
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+BOOTSTRAP_DIR="${SCRIPT_DIR}/rootfs"
+DOWNLOADS_DIR="${SCRIPT_DIR}/downloads"
+ARCH=armhf
+RELEASE=trusty
+
+############################################################################
+#
+# We need a place to download (and cache) third party libraries from nvidia.
+#
+# NOTE: We download these once and cache them locally to improve the speed
+#       of the build process
+#
+############################################################################
+mkdir -p "${SCRIPT_DIR}/downloads"
+
+# If we don't have the Tegra support packages, download them.
+if [ ! -f "${DOWNLOADS_DIR}/Tegra124_Linux_R21.5.0_armhf.tbz2" ]; then
+  wget -P "${DOWNLOADS_DIR}" http://developer.download.nvidia.com/devzone/devcenter/mobile/jetpack_l4t/004/linux-x64/Tegra124_Linux_R21.5.0_armhf.tbz2
+fi
+
+if [ ! -d "${DOWNLOADS_DIR}/Linux_for_Tegra/" ]; then
+  tar -C "${DOWNLOADS_DIR}" -xf "${DOWNLOADS_DIR}/Tegra124_Linux_R21.5.0_armhf.tbz2"
+fi
+
+# Get Chromium and the required support packges
+if [ ! -f "${DOWNLOADS_DIR}/chromium-browser_60.0.3112.113-0ubuntu0.14.04.1194_armhf.deb" ]; then
+  wget -P "${DOWNLOADS_DIR}" "http://launchpadlibrarian.net/334638415/chromium-browser_60.0.3112.113-0ubuntu0.14.04.1194_armhf.deb"
+fi
+
+if [ ! -f "${DOWNLOADS_DIR}/chromium-browser-l10n_60.0.3112.113-0ubuntu0.14.04.1194_all.deb" ]; then
+  wget -P "${DOWNLOADS_DIR}" "http://launchpadlibrarian.net/334587718/chromium-browser-l10n_60.0.3112.113-0ubuntu0.14.04.1194_all.deb"
+fi
+
+if [ ! -f "${DOWNLOADS_DIR}/chromium-codecs-ffmpeg-extra_60.0.3112.113-0ubuntu0.14.04.1194_armhf.deb" ]; then
+  wget -P "${DOWNLOADS_DIR}" "http://launchpadlibrarian.net/334638418/chromium-codecs-ffmpeg-extra_60.0.3112.113-0ubuntu0.14.04.1194_armhf.deb"
+fi
+
+############################################################################
+#
+# Cleans up any mounted filesystems from inside the chroot
+# Also sets ownership of the chroot to the user that initiated the build
+#
+############################################################################
+function finish
+{
+  # Unmount proc
+  chroot "${BOOTSTRAP_DIR}" /bin/bash -c "umount /proc"
+  chroot "${BOOTSTRAP_DIR}" /bin/bash -c "umount /dev/pts"
+
+  # Fixup ownership
+  chown -R ${SUDO_USER:-$USER} "${BOOTSTRAP_DIR}"
+}
+
+# Runs the finish script at exit so that cleanup is done even if the script aborts
+trap finish EXIT
+
+# Ensure the needed tools are installed
+# This includes debootstrap for bootstrapping an Ubuntu/debian environment
+# This includes qemu so that when we execute our `chroot` the OS will detect
+# and be able to emulate our `armhf` environment. This is how we achieve cross
+# compiling in our build environment.
+add-apt-repository -y ppa:openjdk-r/ppa
+apt-get update
+apt-get install --yes --no-install-recommends debootstrap qemu qemu-user-static binfmt-support openjdk-8-jdk
+update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
+update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac
+
+# Make the rootfs dir
+rm -rf "${BOOTSTRAP_DIR}"
+mkdir "${BOOTSTRAP_DIR}"
+
+# Bootstrap phase 1
+debootstrap \
+        --arch=$ARCH \
+        --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
+        --components main,universe,multiverse,restricted,security \
+        --verbose \
+        --foreign \
+        --variant=minbase \
+        $RELEASE \
+        "${BOOTSTRAP_DIR}"
+
+# Use qemu to emulate arm. By having this file in the `/usr/bin` of the `chroot`
+# The OS will automatically use `qemu` to run all the armhf binaries found in the chroot.
+cp /usr/bin/qemu-arm-static "${BOOTSTRAP_DIR}/usr/bin"
+
+# Second stage
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "/debootstrap/debootstrap --second-stage" 
+
+# need to mount proc
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "mount proc   /proc    -t proc"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "mount devpts /dev/pts -t devpts"
+
+
+# apt-get update
+cp "_resources/sources.list.arm" "${BOOTSTRAP_DIR}/etc/apt/sources.list.d/neocast.list"
+cp "_resources/openjdk-8.list" "${BOOTSTRAP_DIR}/etc/apt/sources.list.d/openjdk-r-ppa-trusty.list"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-key adv --keyserver keyserver.ubuntu.com --recv 86F44E2A" # for openjdk-8
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get update"
+
+# apt-utils
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends apt-utils"
+
+# debconf
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends debconf-utils"
+cp "_resources/debconf" "${BOOTSTRAP_DIR}/tmp/debconf"
+chroot "${BOOTSTRAP_DIR}" bash -c "DEBIAN_FRONTEND=noninteractive debconf-set-selections -v /tmp/debconf >/dev/null 2>&1"
+
+# locale
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "echo en_US UTF-8 >> /etc/locale.gen"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "locale-gen en_US.UTF-8"
+# chroot "${BOOTSTRAP_DIR}" /bin/bash -c "dpkg-reconfigure locales"
+
+# Java
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends openjdk-8-jre-headless"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends openjdk-8-jdk-headless"
+
+# Mega install
+PACKAGES="sqlite3 libsqlite3-0 libsqlite3-0-dbg vim x11-apps gstreamer1.0-plugins-base gstreamer1.0-plugins-good libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 gstreamer1.0-tools gstreamer1.0-alsa gstreamer1.0-pulseaudio gstreamer1.0-x xserver-xorg xinit xauth x11-xserver-utils libgl1-mesa-dri nodm libgl1-mesa-glx qdbus isc-dhcp-client linux-firmware kmod dmsetup console-setup kbd upstart x11-utils xserver-xorg-video-all  systemd-shim openssh-server iputils-ping wget nano less psmisc bzip2 cron ethtool iptables tcpdump unzip zip ntp ntpdate curl sudo lsof strace rsync bc netpbm net-tools iputils-ping silversearcher-ag openbox ncdu hsetroot xdotool unclutter gstreamer1.0-libav gstreamer1.0-fluendo-mp3 gstreamer1.0-plugins-ugly libdbus-java tofrodos htop vainfo xterm dbus libwebkit2gtk-3.0-25 pulseaudio libglibmm-2.4-1c2a libzmq3 nginx fuze-zip"
+
+for PACKAGE in $PACKAGES; do
+  chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends ${PACKAGE}"
+done
+
+# Chromium
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends libxss1 xdg-utils"
+cp ${DOWNLOADS_DIR}/chromium*.deb "${BOOTSTRAP_DIR}"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "dpkg --install chromium*.deb"
+rm -f ${BOOTSTRAP_DIR}/chromium*.deb
+
+# network interface
+cp "${SCRIPT_DIR}/_resources/interfaces" "${BOOTSTRAP_DIR}/etc/network/"
+
+# nodm set to autostart
+sed -i 's/false/true/g' "${BOOTSTRAP_DIR}/etc/default/nodm"
+
+# Set a default root password
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c 'echo root:totally-insecure | chpasswd'
+
+# Apply the NVIDIA linux binaries
+"${DOWNLOADS_DIR}/Linux_for_Tegra/apply_binaries.sh" --root "${BOOTSTRAP_DIR}"
+
+# ttyS0 -- This is here because the apply_binaries script copies a differnt ttyS0 atop this one
+cp "${SCRIPT_DIR}/_resources/ttyS0.conf" "${BOOTSTRAP_DIR}/etc/init/ttyS0.conf"
+
+# Builds our render engine.
+# NOTE: The source code is not included here but this gives an example of building a C/C++ based
+#       cross compiled armhf binary without the need for setting up cross compilation tools.
+#       We use `apt` to install all the needed build tools, run our builds, and then remove the
+#       build tools from the rootfs (to keep the size small)
+DEV_PACKAGES="libwebkit2gtk-3.0-dev libx11-dev libzmq3-dev uuid-dev libgtk-3-dev libglibmm-2.4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev g++ make"
+mkdir -p "${BOOTSTRAP_DIR}/src"
+mount --bind "${SCRIPT_DIR}/src" "${BOOTSTRAP_DIR}/src"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get install --yes --no-install-recommends ${DEV_PACKAGES}"
+# Here is where we would build our binary...
+#chroot "${BOOTSTRAP_DIR}" /bin/bash -c "cd src/render; make clean renderapp"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get remove --yes ${DEV_PACKAGES}"
+chroot "${BOOTSTRAP_DIR}" /bin/bash -c "apt-get --yes autoremove"
+umount "${BOOTSTRAP_DIR}/src"
+
+# Here is where we would copy the built binary from our `src` directory to our `chroot` binary directory
+# cp "${SCRIPT_DIR}/src/render/renderapp" "${BOOTSTRAP_DIR}/usr/sbin/"
+
+# done
+finish

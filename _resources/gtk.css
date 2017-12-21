@@ -1,0 +1,67 @@
+/*
+ References Trac ticket #1247
+
+ We are setting the default widget background color to black
+ in order to avoid a flash of white painting in WebKit/Flash/Gtk.
+
+ I believe the defect to be in the confluence of Gtk/Flash/WebKit
+ in that the background for a plugin's gtk widget on a page should
+ default to the background of the element in which its contained
+ to avoid any drawing issue.
+
+ While looking for a permanent way to resolve this issue we use
+ this file which will define the default background color of
+ widgets to be "black" since this is the most common target
+ background. However, for things like tickers where a non-black
+ background might be used there will be a flash of black. This
+ will be less obtrusive than white, but still not optimal.
+*/
+
+
+/*
+  NOTE: for more on GTK3 styling see:
+        http://gnomejournal.org/article/107/styling-gtk-with-css
+*/
+
+
+* {
+    /*
+     Reset widths and heights around borders, apparently this
+     is not ZERO by default causing content to shift on screen
+    */
+    border-width: 0;
+    margin: 0;
+    padding: 0;
+
+    /* Prevent scrollbar from showing (e.g. in WebKit windows) */
+    -GtkScrollbar-slider-width: 0;
+    -GtkScrollbar-trough-border: 0;
+
+    /*
+      We found that if a webkit zone contained material that required
+      scrolling, the scrollbars would not be displayed, but the
+      GtkScrolledWindow object's defaut 3px spacing would be displayed
+    */
+    -GtkScrolledWindow-scrollbar-spacing: 0;
+
+    /*
+       If we do not specify this we end up with a resize grip
+       shown in the bottom right corner of each window. This
+       is especially true of image windows.
+    */
+    -GtkWindow-resize-grip-default: false;
+    -GtkWindow-resize-grip-width: 0;
+    -GtkWindow-resize-grip-height: 0;
+}
+
+/* Prevent scrollbar from showing (e.g. in WebKit windows) GES */
+.scrollbar {
+    -GtkRange-trough-border: 0;
+    -GtkRange-arrow-scaling: 0;
+    -GtkRange-slider-width: 0;
+    -GtkRange-stepper-size: 0;
+    -GtkScrollbar-min-slider-length: 0; /* minimum size for the slider. sadly can't be in '.slider' where it belongs */
+
+    -GtkRange-stepper-spacing: 0;
+    -GtkRange-trough-under-steppers: 0;
+}
